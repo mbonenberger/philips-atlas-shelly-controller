@@ -13,6 +13,8 @@ class Device {
     this.relay = options.relay === undefined ? true : options.relay;
     this.kvs = options.kvs || new Map();
     this.storage = options.storage || new Map();
+    this.virtualComponents = options.virtualComponents || new Map();
+    this.nextVirtualListener = 1;
     this.kvsEtag = options.kvsEtag || "etag-1";
     this.kvsRevision = 1;
     this.tasks = [];
@@ -88,12 +90,44 @@ class Device {
     this.emitRelay(state);
   }
 
+  virtualComponent(role) {
+    if (!this.virtualComponents.has(role)) {
+      this.virtualComponents.set(role, { value: null, listeners: {} });
+    }
+    const component = this.virtualComponents.get(role);
+    const device = this;
+    return {
+      setValue(value) { component.value = value; },
+      getValue() { return component.value; },
+      on(event, handler) {
+        const id = device.nextVirtualListener++;
+        component.listeners[id] = { event, handler };
+        return id;
+      },
+      off(id) { delete component.listeners[id]; }
+    };
+  }
+
+  triggerVirtual(role, event) {
+    const component = this.virtualComponents.get(role);
+    assert(component, "virtual component " + role + " does not exist");
+    for (const listener of Object.values(component.listeners)) {
+      if (listener.event === (event || "single_push")) listener.handler({ source: "cloud" });
+    }
+  }
+
+  virtualValue(role) {
+    const component = this.virtualComponents.get(role);
+    return component ? component.value : undefined;
+  }
+
   start() {
     this.tasks = [];
     this.handlers = {};
     this.events = [];
     this.inFlightRpcCalls = 0;
     this.activeTimers = new Set();
+    for (const component of this.virtualComponents.values()) component.listeners = {};
     const device = this;
     const context = {
       print(message) { device.logs.push(message); },
@@ -197,6 +231,7 @@ class Device {
       },
       Script: {
         addRpcHandler(name, handler) { device.handlers[name] = handler; },
+        getVcHandle(role) { return device.virtualComponent(role); },
         storage: {
           setItem(key, value) {
             if (device.failNextStorageSet || (key === "dirty" && device.failDirtyMarkerSets > 0)) {
@@ -271,6 +306,44 @@ test("production scene labels follow the calibrated Atlas cycle order", () => {
     const device = new Device({ kvs: knownState(mode), relay: true });
     assert.strictEqual(device.status().scene, expected[mode]);
   }
+});
+
+test("Shelly Cloud scene buttons select exact known scenes and publish their status", () => {
+  const device = new Device({ kvs: knownState(0), relay: true });
+  assert.strictEqual(device.virtualValue("status"), "Known: 4000K / 100%; O1 on");
+  device.triggerVirtual("select_cool");
+  device.drain();
+  assert.strictEqual(device.status().mode, 1);
+  assert.strictEqual(device.virtualValue("status"), "Known: 6500K / 50%; O1 on");
+  device.triggerVirtual("select_warm");
+  device.drain();
+  assert.strictEqual(device.status().mode, 2);
+  assert.strictEqual(device.virtualValue("status"), "Known: 2700K / 50%; O1 on");
+});
+
+test("Shelly Cloud scene buttons fail closed while uncertainty requires local sync", () => {
+  const device = new Device({ kvs: new Map([["atlas_mode", { s: 5, k: 0, m: 1, r: "", c: "", o: "" }]]), relay: true });
+  assert.strictEqual(device.virtualComponents.has("confirm_warm"), false, "Cloud must not expose scene confirmation");
+  const initialSwitchSets = device.switchSets;
+  device.triggerVirtual("select_warm");
+  assert.strictEqual(device.switchSets, initialSwitchSets, "scene selection must fail closed while uncertain");
+  assert.match(device.virtualValue("status"), /^Scene unknown: inspect it, then use local sync; last error: cloud scene selection was rejected:/);
+  device.command({ command: "sync", mode: 2, request_id: "local-visual-confirmation" });
+  device.drain();
+  assert.strictEqual(device.status().mode, 2);
+  assert.strictEqual(device.status().mode_known, true);
+  assert.strictEqual(device.switchSets, initialSwitchSets, "local synchronization must not operate O1");
+  assert.strictEqual(device.virtualValue("status"), "Known: 2700K / 50%; O1 on");
+});
+
+test("Shelly Cloud reports a scene selection rejected while another operation is active", () => {
+  const device = new Device({ kvs: knownState(0), relay: true });
+  device.command({ command: "next", request_id: "busy-before-cloud" });
+  device.triggerVirtual("select_warm");
+  assert.match(device.virtualValue("status"), /^Busy: next; last error: cloud scene selection was rejected: controller is busy with next$/);
+  device.drain();
+  assert.strictEqual(device.status().mode, 1);
+  assert.match(device.virtualValue("status"), /^Known: 6500K \/ 50%; O1 on; last error: cloud scene selection was rejected: controller is busy with next$/);
 });
 
 test("restart after durable invalidation cannot resurrect the old scene", () => {
@@ -631,6 +704,7 @@ test("a physical short cycle durably invalidates the tracked scene", () => {
   device.physicalSet(true);
   device.runUntil(device.now);
   assert.strictEqual(device.status().mode_known, false);
+  assert.match(device.virtualValue("status"), /^Scene unknown:/);
   assert.strictEqual(kvs.get("atlas_mode").k, 0);
   device.start();
   assert.strictEqual(device.status().mode_known, false);

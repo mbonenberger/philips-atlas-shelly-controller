@@ -198,6 +198,39 @@ When `mode_known` is false:
     curl -s -X POST "http://$SHELLY_IP/rpc/Script.AtlasCommand" \
       -d "{\"id\":$SCRIPT_ID,\"command\":\"sync\",\"mode\":2,\"request_id\":\"sync-warm-001\"}"
 
+## Shelly Smart Control controls
+
+The deployed script declares managed virtual components for Shelly Smart
+Control. Once the script is saved and started on a cloud-connected Shelly,
+they appear as controls for the device in the Shelly app. The app uses these
+controls instead of requiring callers to invoke the script's custom RPC methods.
+
+| Virtual control | Effect |
+|---|---|
+| `Atlas select Bright` | Selects scene 0: 4000 K / 100%. |
+| `Atlas select Cool` | Selects scene 1: 6500 K / 50%. |
+| `Atlas select Warm` | Selects scene 2: 2700 K / 50%. |
+| `Atlas scene status` | Shows loading, active-operation, known-scene, uncertainty, and the latest rejection or error. |
+
+The select controls are available only when the tracked scene is known and
+durable. If the status says that the scene is unknown, inspect the actual light
+output while physically present, then use the local `sync` RPC command shown
+above. Scene synchronization is intentionally not exposed in Shelly Cloud:
+the device cannot verify that a remote user has visually confirmed the light.
+
+To make the controls available remotely:
+
+1. Update the Shelly to firmware that supports managed virtual components.
+2. Deploy this script, enable **Run on startup**, and start it.
+3. In Shelly Smart Control, open the 2PM Gen4 device and enable **Cloud** if it
+   is not already enabled.
+4. When on the same LAN, open the device's local IP from the app and inspect
+   **Virtual Components**. The script manages the controls automatically.
+
+These controls are specific to Shelly Smart Control. They do not add custom
+scene controls to the existing native Apple Home switch; use a HomeKit bridge
+for that integration.
+
 ## Installation and deployment
 
 The simplest installation method is the Shelly web interface:

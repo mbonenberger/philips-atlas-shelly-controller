@@ -1,3 +1,12 @@
+/* @meta {
+  "vc": {
+    "select_bright": { "type": "button", "config": { "name": "Atlas select Bright" } },
+    "select_cool": { "type": "button", "config": { "name": "Atlas select Cool" } },
+    "select_warm": { "type": "button", "config": { "name": "Atlas select Warm" } },
+    "status": { "type": "text", "config": { "name": "Atlas scene status", "meta": { "ui": { "view": "label" } } } }
+  }
+} */
+
 // Philips Atlas scene controller for Shelly 2PM Gen4 (local only).
 // Controls switch:0 (O1) only; switch:1 (O2) is never read or changed.
 
@@ -59,6 +68,15 @@ let requestHistoryDegraded = false;
 let safetyDegraded = false;
 let lastPersistenceError = null;
 let retryablePendingRequestIds = [];
+
+// Managed virtual components appear in Shelly Smart Control when the device is
+// cloud-connected. Buttons are deliberately momentary: selecting the same
+// scene twice must still execute. Scene synchronization remains a local,
+// visually verified recovery action and is not exposed through Shelly Cloud.
+let cloudSelectBright = Script.getVcHandle("select_bright");
+let cloudSelectCool = Script.getVcHandle("select_cool");
+let cloudSelectWarm = Script.getVcHandle("select_warm");
+let cloudStatus = Script.getVcHandle("status");
 
 function log(message) { print("[atlas] " + message); }
 function uptimeMs() { return Shelly.getUptimeMs(); }
@@ -201,7 +219,26 @@ function clearProvenSafePreMutationMarker() {
     setError("could not reconcile pre-mutation dirty marker: " + error.message);
   }
 }
-function setError(message) { lastError = message; log("ERROR: " + message); }
+function cloudStatusText() {
+  if (!initialized) return "Loading controller state";
+  let text;
+  if (activeOperation) text = "Busy: " + activeOperation.name;
+  else if (!modeKnown || !durableModeKnown || persistenceDirty || safetyDegraded) {
+    text = "Scene unknown: inspect it, then use local sync";
+  } else text = "Known: " + modeLabel(currentMode) + "; O1 " + (relayState === true ? "on" : (relayState === false ? "off" : "unknown"));
+  if (lastError !== null) text += "; last error: " + lastError;
+  return text.length <= 240 ? text : text.slice(0, 237) + "...";
+}
+function updateCloudStatus() {
+  if (!cloudStatus) return;
+  try { cloudStatus.setValue(cloudStatusText()); }
+  catch (error) { log("could not update Atlas cloud status: " + error.message); }
+}
+function setError(message) {
+  lastError = message;
+  log("ERROR: " + message);
+  updateCloudStatus();
+}
 function setHistoryError(message) {
   lastHistoryError = message;
   setError(message);
@@ -212,6 +249,7 @@ function persistenceFailure(phase, code, message) {
 }
 function readyError() {
   if (!initialized) return "controller is still loading KVS state";
+  if (activeOperation) return "controller is busy with " + activeOperation.name;
   if (safetyDegraded) return "dirty-marker storage is unavailable; repair storage and use sync";
   if (persistenceDirty) return "controller persistence is dirty; sync is required";
   if (!modeKnown || !durableModeKnown) return "Atlas mode is uncertain; physically inspect it and use sync";
@@ -267,6 +305,7 @@ function beginOperation(name, command, targetMode, requestId) {
   activeOperation = op;
   lastError = null;
   op.watchdog = Timer.set(OPERATION_TIMEOUT_MS, false, function () { timeoutOperation(op); });
+  updateCloudStatus();
   log("starting " + name + " as " + op.id);
   return { operation: op };
 }
@@ -304,6 +343,7 @@ function finishOperation(op, ok, message) {
   lastOperation = operationSnapshot(op);
   if (ok) log("completed " + op.name + ": " + message);
   else setError(op.name + " failed: " + message);
+  updateCloudStatus();
 }
 function recoverTimedOutRelayOn(op, callback) {
   let done = false;
@@ -439,6 +479,7 @@ function finishKvsWrite(write, ok, error) {
   write.callback(ok, error);
   persistenceDirty = safetyDegraded || kvsWriteQueue.length > 0 || !lastKvsWriteOk;
   processKvsWriteQueue();
+  updateCloudStatus();
 }
 function finishSuccessfulKvsWrite(write, result) {
   if (result && typeof result.etag === "string") {
@@ -657,6 +698,7 @@ function recordRelayTransition(isOn, internal) {
   relayState = isOn;
   if (isOn) knownOffSinceMs = null;
   else knownOffSinceMs = uptimeMs();
+  updateCloudStatus();
   if (internal) return;
 
   relayGeneration += 1;
@@ -1047,6 +1089,27 @@ function startSync(mode, requestId) {
   return started;
 }
 
+function startCloudScene(mode) {
+  let started = startSetMode(mode, "cloud_select_" + mode, "set:" + mode, null);
+  if (started.error) setError("cloud scene selection was rejected: " + started.error);
+  updateCloudStatus();
+}
+function bindCloudButton(button, mode) {
+  if (!button) {
+    log("Atlas cloud button is unavailable; update the Shelly firmware and restart the script");
+    return;
+  }
+  button.on("single_push", function () {
+    startCloudScene(mode);
+  });
+}
+function bindCloudControls() {
+  bindCloudButton(cloudSelectBright, 0);
+  bindCloudButton(cloudSelectCool, 1);
+  bindCloudButton(cloudSelectWarm, 2);
+  updateCloudStatus();
+}
+
 function statusObject(relayOn, relayError) {
   let dirtyMarker = hasDirtyMarker();
   return {
@@ -1430,10 +1493,13 @@ function loadMode() {
         log("durable dirty marker found; forcing uncertain scene state");
         persistState(false, currentMode, null, function (saved, error) {
           if (!saved) setError("startup uncertainty repair failed: " + error);
+          updateCloudStatus();
         });
+        updateCloudStatus();
         return;
       }
       log(modeKnown ? "restored persistent known scene " + currentMode : "restored durable uncertain scene state; sync required");
+      updateCloudStatus();
       return;
     }
     currentMode = 0;
@@ -1445,9 +1511,11 @@ function loadMode() {
     clearProvenSafePreMutationMarker();
     persistenceDirty = hasDirtyMarker();
     log("no valid schema-5 state; visually identify the scene, then call sync");
+    updateCloudStatus();
   });
 }
 
+bindCloudControls();
 seedRelayStateAtStartup();
 loadMode();
 log("controller started for switch:0; O2 is untouched");
