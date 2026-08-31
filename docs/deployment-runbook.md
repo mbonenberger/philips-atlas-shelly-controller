@@ -17,8 +17,8 @@ Shelly 2PM Gen4 using the `switch` profile and controls only O1 / `switch:0`.
 - A script restart deliberately makes the Atlas scene state uncertain if the
   relay was off. This is safe: visually inspect the light and synchronize it
   locally or use `Atlas Confirm observed` before applying a remote scene.
-- Never delete the script slot as a virtual-component cleanup shortcut. Script
-  storage is cleared, and managed components may remain orphaned on the device.
+- Do not delete the script slot as a routine cleanup shortcut. Script storage
+  is cleared, and the scene must then be synchronized again.
 
 ## Prerequisites
 
@@ -68,13 +68,16 @@ Verify all of the following:
 - `enable` is `true`, so it runs after a reboot;
 - it is the intended active controller, not another automation.
 
-Then run the read-only deployment guard:
+Provision or verify the fixed Cloud components, then run the read-only guard:
 
 ```sh
+node scripts/provision-shelly-components.js
 node scripts/check-shelly.js preflight
 ```
 
-This records current script memory and inventories every dynamic component
+The provisioning command creates the exact five controls and their group when
+they are missing. It is idempotent and refuses to overwrite a fixed key that is
+occupied by an unexpected component. The preflight command records current script memory and inventories every dynamic component
 whose name starts with `Atlas`. It fails when the script is stopped, reports an
 error, has less free script memory than `SHELLY_MIN_SCRIPT_MEM_FREE`, or has an
 unexpected Atlas component. The default 8192-byte floor is a local operational
@@ -82,10 +85,10 @@ guard based on this controller's deployment history, not a vendor-published
 per-script allowance.
 
 Do not continue when old select, confirm, status, or group components remain.
-Managed components can survive script replacement or deletion, and direct
-`Virtual.Delete` may be denied. Resolve them through a supported Shelly UI or
-firmware procedure, or escalate to Shelly support. Do not factory-reset the
-device without a separate configuration backup and explicit approval.
+Direct `Virtual.Delete` may be denied for script-owned components. Resolve them
+through a supported Shelly UI or firmware procedure, or escalate to Shelly
+support. Do not factory-reset the device without a separate configuration
+backup and explicit approval.
 
 ## 2. Validate the source
 
@@ -96,6 +99,7 @@ node --check atlas-controller.js
 node --check tests/controller.test.js
 node --check scripts/build-shelly.js
 node --check scripts/check-shelly.js
+node --check scripts/provision-shelly-components.js
 node tests/controller.test.js
 node scripts/build-shelly.js
 node --check dist/atlas-controller.js
@@ -104,10 +108,14 @@ git diff --check
 ```
 
 Deploy `dist/atlas-controller.js`, not the readable source file. The build
-removes comments and indentation without changing the `@meta` header, enforces
-a 56,000-byte artifact ceiling, and the second simulator run verifies the exact
-artifact that will be uploaded. `dist/` is ignored and must be rebuilt for each
-deployment.
+removes comments and indentation, rejects managed `@meta` virtual-component
+declarations, retains physical line breaks, and enforces a 24,000-byte artifact
+ceiling. On the tested Shelly 2PM Gen4 firmware 2.0.0, starting even a minimal
+managed virtual-component declaration reboots the device; the separately
+provisioned fixed components avoid that firmware path. The simulator also
+rejects more than two nested anonymous callbacks, and its second run verifies
+the exact artifact that will be uploaded. `dist/` is ignored and must be rebuilt
+for each deployment.
 
 ## 3. Back up the current script in chunks
 
@@ -162,8 +170,9 @@ node scripts/check-shelly.js verify
 
 The first response must report `running: true`, no `errors`, and usable
 `mem_used`, `mem_peak`, and `mem_free` values. The automated verification also
-requires the configured free-memory floor and the exact five expected virtual
-components. The Atlas status response must be valid and identify its
+requires the configured free-memory floor, the exact five expected virtual
+controls, and their auto-generated `Atlas Controller` group. The Atlas status
+response must be valid and identify its
 initialization and scene-state fields. With the current controller, a restart
 may return `mode_known: false` and `durable_mode_known: false`; this is
 intentional uncertainty protection, not a deployment failure.
@@ -173,8 +182,8 @@ supervised exercise of Apply, Confirm, On, and Off. If the script stops, reports
 `out_of_memory`, falls below the configured memory floor, or exposes additional
 Atlas components, restore the backup immediately.
 
-On firmware that supports managed virtual components, verify these controls in
-the Shelly web interface or Shelly Smart Control:
+Verify these provisioned controls in the Shelly web interface or Shelly Smart
+Control:
 
 - `Atlas scene`
 - `Atlas Apply scene`
@@ -192,7 +201,7 @@ selection without operating O1. For example, after confirming the warm
 
 ```sh
 curl -fsS -X POST "http://${SHELLY_IP}/rpc/Script.AtlasCommand" \
-  -d "{\"id\":${SCRIPT_ID},\"command\":\"sync\",\"mode\":2,\"request_id\":\"deployment-sync-warm\"}"
+  -d "{\"id\":${SCRIPT_ID},\"command\":\"sync\",\"mode\":2}"
 ```
 
 Do not use remote confirmation as a substitute for physically observing the
@@ -207,8 +216,8 @@ preserves the tracked scene. A rapid native OFF/ON cycle bypasses that safeguard
 and must be treated as a possible scene change.
 
 There is deliberately no Cloud status component. The selector plus four action
-buttons use five managed components and five listeners. Use `Script.AtlasStatus`
-for diagnostics.
+buttons use five provisioned components and five listeners. Use
+`Script.AtlasStatus` for diagnostics.
 
 ## Recovery checklist
 
@@ -226,4 +235,5 @@ If deployment did not finish successfully:
 ## Reference
 
 - [Shelly Script RPC documentation](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Script/)
+- [Shelly virtual-component RPC documentation](https://shelly-api-docs.shelly.cloud/gen2/DynamicComponents/Virtual/)
 - [Shelly managed virtual components](https://shelly-api-docs.shelly.cloud/gen2/Scripts/APIs/Virtual/)

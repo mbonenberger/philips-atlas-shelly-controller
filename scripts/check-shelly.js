@@ -25,7 +25,7 @@ const mode = process.argv[2];
 const host = process.env.SHELLY_IP;
 const scriptId = Number(process.env.SCRIPT_ID || 1);
 const minimumFree = Number(process.env.SHELLY_MIN_SCRIPT_MEM_FREE || 8192);
-const expected = [
+const expectedControls = [
   ["enum", "Atlas scene"],
   ["button", "Atlas Apply scene"],
   ["button", "Atlas Confirm observed"],
@@ -68,24 +68,44 @@ function rpc(method, params) {
   });
 }
 
-function atlasComponents(components) {
-  return components
-    .filter((component) => component.config && typeof component.config.name === "string" && component.config.name.startsWith("Atlas"))
-    .map((component) => [component.key.split(":")[0], component.config.name])
-    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+function atlasInventory(components) {
+  const atlas = components.filter((component) => (
+    component.config && typeof component.config.name === "string" && component.config.name.startsWith("Atlas")
+  ));
+  return {
+    controls: atlas
+      .filter((component) => component.key.split(":")[0] !== "group")
+      .map((component) => ({ key: component.key, type: component.key.split(":")[0], name: component.config.name }))
+      .sort((left, right) => left.key.localeCompare(right.key)),
+    groups: atlas
+      .filter((component) => component.key.split(":")[0] === "group")
+      .map((component) => ({
+        key: component.key,
+        name: component.config.name,
+        members: Array.isArray(component.status && component.status.value) ? component.status.value.slice().sort() : []
+      }))
+      .sort((left, right) => left.key.localeCompare(right.key))
+  };
 }
 
-function sameComponents(actual) {
-  const wanted = expected.slice().sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
-  return JSON.stringify(actual) === JSON.stringify(wanted);
+function hasExpectedInventory(inventory) {
+  const actualControls = inventory.controls
+    .map((component) => [component.type, component.name])
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  const wantedControls = expectedControls.slice().sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  if (JSON.stringify(actualControls) !== JSON.stringify(wantedControls)) return false;
+  if (inventory.groups.length !== 1 || inventory.groups[0].name !== "Atlas Controller") return false;
+  const controlKeys = inventory.controls.map((component) => component.key).sort();
+  return JSON.stringify(inventory.groups[0].members) === JSON.stringify(controlKeys);
 }
 
 (async () => {
   const [status, dynamic] = await Promise.all([
     rpc("Script.GetStatus", { id: scriptId }),
-    rpc("Shelly.GetComponents", { dynamic_only: true, include: ["config"] })
+    rpc("Shelly.GetComponents", { dynamic_only: true, include: ["config", "status"] })
   ]);
-  const actual = atlasComponents(dynamic.components || []);
+  const inventory = atlasInventory(dynamic.components || []);
+  const atlasCount = inventory.controls.length + inventory.groups.length;
   const errors = status.errors || [];
 
   if (!status.running) throw new Error("script " + scriptId + " is not running");
@@ -94,11 +114,11 @@ function sameComponents(actual) {
     throw new Error("script memory headroom " + status.mem_free + " is below the configured floor " + minimumFree);
   }
 
-  if (mode === "preflight" && actual.length !== 0 && !sameComponents(actual)) {
-    throw new Error("unexpected Atlas virtual components block deployment: " + JSON.stringify(actual));
+  if (mode === "preflight" && atlasCount !== 0 && !hasExpectedInventory(inventory)) {
+    throw new Error("unexpected Atlas virtual-component inventory blocks deployment: " + JSON.stringify(inventory));
   }
-  if (mode === "verify" && !sameComponents(actual)) {
-    throw new Error("deployed Atlas virtual components do not match the expected five: " + JSON.stringify(actual));
+  if (mode === "verify" && !hasExpectedInventory(inventory)) {
+    throw new Error("deployed Atlas virtual components do not match the expected five controls and controller group: " + JSON.stringify(inventory));
   }
 
   process.stdout.write(JSON.stringify({
@@ -106,7 +126,8 @@ function sameComponents(actual) {
     mode,
     script_id: scriptId,
     memory: { used: status.mem_used, peak: status.mem_peak, free: status.mem_free, minimum_free: minimumFree },
-    atlas_components: actual
+    atlas_components: inventory.controls,
+    atlas_group: inventory.groups[0] || null
   }, null, 2) + "\n");
 })().catch((error) => {
   process.stderr.write("check failed: " + error.message + "\n");
