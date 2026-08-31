@@ -321,19 +321,23 @@ test("Shelly Cloud scene buttons select exact known scenes and publish their sta
   assert.strictEqual(device.virtualValue("status"), "Known: 2700K / 50%; O1 on");
 });
 
-test("Shelly Cloud scene buttons fail closed while uncertainty requires local sync", () => {
+test("Shelly Cloud scene confirmation restores an uncertain scene without operating O1", () => {
   const device = new Device({ kvs: new Map([["atlas_mode", { s: 5, k: 0, m: 1, r: "", c: "", o: "" }]]), relay: true });
-  assert.strictEqual(device.virtualComponents.has("confirm_warm"), false, "Cloud must not expose scene confirmation");
+  assert.strictEqual(device.virtualComponents.has("confirm_warm"), true, "Cloud must expose explicit scene confirmation");
   const initialSwitchSets = device.switchSets;
   device.triggerVirtual("select_warm");
   assert.strictEqual(device.switchSets, initialSwitchSets, "scene selection must fail closed while uncertain");
-  assert.match(device.virtualValue("status"), /^Scene unknown: inspect it, then use local sync; last error: cloud scene selection was rejected:/);
-  device.command({ command: "sync", mode: 2, request_id: "local-visual-confirmation" });
+  assert.match(device.virtualValue("status"), /^Scene unknown: inspect it, then confirm observed scene; last error: cloud scene selection was rejected:/);
+  device.triggerVirtual("confirm_warm");
   device.drain();
   assert.strictEqual(device.status().mode, 2);
   assert.strictEqual(device.status().mode_known, true);
-  assert.strictEqual(device.switchSets, initialSwitchSets, "local synchronization must not operate O1");
+  assert.strictEqual(device.status().durable_mode_known, true);
+  assert.strictEqual(device.switchSets, initialSwitchSets, "cloud confirmation must not operate O1");
   assert.strictEqual(device.virtualValue("status"), "Known: 2700K / 50%; O1 on");
+  device.triggerVirtual("confirm_bright");
+  assert.strictEqual(device.status().mode, 2, "known state must not be overwritten by cloud confirmation");
+  assert.match(device.virtualValue("status"), /cloud scene confirmation is only available while the scene is unknown$/);
 });
 
 test("Shelly Cloud reports a scene selection rejected while another operation is active", () => {

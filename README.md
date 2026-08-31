@@ -184,7 +184,8 @@ When `mode_known` is false:
 
 1. Inspect the visible light output.
 2. Match it to the calibrated table.
-3. Send `sync` with the corresponding mode.
+3. Send `sync` with the corresponding mode, or use the matching Cloud
+   confirmation control after the same visual check.
 4. Confirm `mode_known`, `durable_mode_known`, and `persistent` are true.
 
 `sync` changes only stored controller state. It does not operate O1 or O2.
@@ -211,13 +212,17 @@ controls instead of requiring callers to invoke the script's custom RPC methods.
 | `Atlas select Bright` | Selects scene 0: 4000 K / 100%. |
 | `Atlas select Cool` | Selects scene 1: 6500 K / 50%. |
 | `Atlas select Warm` | Selects scene 2: 2700 K / 50%. |
+| `Atlas confirm observed Bright` | Marks the scene as 0 after visually confirming 4000 K / 100%. |
+| `Atlas confirm observed Cool` | Marks the scene as 1 after visually confirming 6500 K / 50%. |
+| `Atlas confirm observed Warm` | Marks the scene as 2 after visually confirming 2700 K / 50%. |
 | `Atlas scene status` | Shows loading, active-operation, known-scene, uncertainty, and the latest rejection or error. |
 
 The select controls are available only when the tracked scene is known and
-durable. If the status says that the scene is unknown, inspect the actual light
-output while physically present, then use the local `sync` RPC command shown
-above. Scene synchronization is intentionally not exposed in Shelly Cloud:
-the device cannot verify that a remote user has visually confirmed the light.
+durable. The confirmation controls are accepted only while the scene is
+unknown. They do not operate O1; they persist the scene named on the button.
+Before using one, inspect the actual light output and choose the matching
+button. The Shelly cannot verify that a remote user has made this observation,
+so do not use a confirmation button based on an assumption about the scene.
 
 To make the controls available remotely:
 

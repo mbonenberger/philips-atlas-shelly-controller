@@ -16,7 +16,8 @@ Shelly 2PM Gen4 using the `switch` profile and controls only O1 / `switch:0`.
   and running state first.
 - A script restart deliberately makes the Atlas scene state uncertain if the
   relay was off. This is safe: visually inspect the light and synchronize it
-  locally before making a remote scene selection.
+  locally or use the matching Cloud confirmation button before making a remote
+  scene selection.
 
 ## Prerequisites
 
@@ -138,13 +139,16 @@ the Shelly web interface or Shelly Smart Control:
 - `Atlas select Bright`
 - `Atlas select Cool`
 - `Atlas select Warm`
+- `Atlas confirm observed Bright`
+- `Atlas confirm observed Cool`
+- `Atlas confirm observed Warm`
 - `Atlas scene status`
 
 ## 6. Restore the scene safely
 
 When the status says the mode is unknown, physically inspect the light and call
-the local `sync` command with the observed scene. For example, after confirming
-the warm 2700 K / 50% scene:
+the local `sync` command with the observed scene, or use the matching Cloud
+confirmation button. For example, after confirming the warm 2700 K / 50% scene:
 
 ```sh
 curl -fsS -X POST "http://${SHELLY_IP}/rpc/Script.AtlasCommand" \
@@ -152,8 +156,10 @@ curl -fsS -X POST "http://${SHELLY_IP}/rpc/Script.AtlasCommand" \
 ```
 
 Do not use a remote scene-select button as a substitute for this physical
-confirmation. Once `mode_known` and `durable_mode_known` are true, the virtual
-controls can safely select scenes again.
+confirmation. The Cloud confirmation buttons only persist the label shown on
+the button; they cannot verify the visible output. Once `mode_known` and
+`durable_mode_known` are true, the virtual scene-select controls can safely
+select scenes again.
 
 ## Recovery checklist
 

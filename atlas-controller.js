@@ -3,6 +3,9 @@
     "select_bright": { "type": "button", "config": { "name": "Atlas select Bright" } },
     "select_cool": { "type": "button", "config": { "name": "Atlas select Cool" } },
     "select_warm": { "type": "button", "config": { "name": "Atlas select Warm" } },
+    "confirm_bright": { "type": "button", "config": { "name": "Atlas confirm observed Bright" } },
+    "confirm_cool": { "type": "button", "config": { "name": "Atlas confirm observed Cool" } },
+    "confirm_warm": { "type": "button", "config": { "name": "Atlas confirm observed Warm" } },
     "status": { "type": "text", "config": { "name": "Atlas scene status", "meta": { "ui": { "view": "label" } } } }
   }
 } */
@@ -71,11 +74,14 @@ let retryablePendingRequestIds = [];
 
 // Managed virtual components appear in Shelly Smart Control when the device is
 // cloud-connected. Buttons are deliberately momentary: selecting the same
-// scene twice must still execute. Scene synchronization remains a local,
-// visually verified recovery action and is not exposed through Shelly Cloud.
+// scene twice must still execute. Confirmation buttons only repair uncertain
+// state and rely on the user having visually identified the actual scene.
 let cloudSelectBright = Script.getVcHandle("select_bright");
 let cloudSelectCool = Script.getVcHandle("select_cool");
 let cloudSelectWarm = Script.getVcHandle("select_warm");
+let cloudConfirmBright = Script.getVcHandle("confirm_bright");
+let cloudConfirmCool = Script.getVcHandle("confirm_cool");
+let cloudConfirmWarm = Script.getVcHandle("confirm_warm");
 let cloudStatus = Script.getVcHandle("status");
 
 function log(message) { print("[atlas] " + message); }
@@ -224,7 +230,7 @@ function cloudStatusText() {
   let text;
   if (activeOperation) text = "Busy: " + activeOperation.name;
   else if (!modeKnown || !durableModeKnown || persistenceDirty || safetyDegraded) {
-    text = "Scene unknown: inspect it, then use local sync";
+    text = "Scene unknown: inspect it, then confirm observed scene";
   } else text = "Known: " + modeLabel(currentMode) + "; O1 " + (relayState === true ? "on" : (relayState === false ? "off" : "unknown"));
   if (lastError !== null) text += "; last error: " + lastError;
   return text.length <= 240 ? text : text.slice(0, 237) + "...";
@@ -1094,19 +1100,32 @@ function startCloudScene(mode) {
   if (started.error) setError("cloud scene selection was rejected: " + started.error);
   updateCloudStatus();
 }
-function bindCloudButton(button, mode) {
+function startCloudConfirmation(mode) {
+  if (modeKnown && durableModeKnown) {
+    setError("cloud scene confirmation is only available while the scene is unknown");
+    updateCloudStatus();
+    return;
+  }
+  let started = startSync(mode, null);
+  if (started.error) setError("cloud scene confirmation was rejected: " + started.error);
+  updateCloudStatus();
+}
+function bindCloudButton(button, mode, handler) {
   if (!button) {
     log("Atlas cloud button is unavailable; update the Shelly firmware and restart the script");
     return;
   }
   button.on("single_push", function () {
-    startCloudScene(mode);
+    handler(mode);
   });
 }
 function bindCloudControls() {
-  bindCloudButton(cloudSelectBright, 0);
-  bindCloudButton(cloudSelectCool, 1);
-  bindCloudButton(cloudSelectWarm, 2);
+  bindCloudButton(cloudSelectBright, 0, startCloudScene);
+  bindCloudButton(cloudSelectCool, 1, startCloudScene);
+  bindCloudButton(cloudSelectWarm, 2, startCloudScene);
+  bindCloudButton(cloudConfirmBright, 0, startCloudConfirmation);
+  bindCloudButton(cloudConfirmCool, 1, startCloudConfirmation);
+  bindCloudButton(cloudConfirmWarm, 2, startCloudConfirmation);
   updateCloudStatus();
 }
 
