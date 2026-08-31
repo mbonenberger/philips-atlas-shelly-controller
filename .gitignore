@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Test coverage and build output
+coverage/
+dist/
+build/
+
+# Logs and runtime diagnostics
+*.log
+logs/
+
+# Local environment and device configuration
+.env
+.env.*
+!.env.example
+*.local
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
