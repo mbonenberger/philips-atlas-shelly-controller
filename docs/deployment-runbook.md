@@ -16,8 +16,9 @@ Shelly 2PM Gen4 using the `switch` profile and controls only O1 / `switch:0`.
   and running state first.
 - A script restart deliberately makes the Atlas scene state uncertain if the
   relay was off. This is safe: visually inspect the light and synchronize it
-  locally or use the matching Cloud confirmation button before making a remote
-  scene selection.
+  locally or use `Atlas Confirm observed` before applying a remote scene.
+- Never delete the script slot as a virtual-component cleanup shortcut. Script
+  storage is cleared, and managed components may remain orphaned on the device.
 
 ## Prerequisites
 
@@ -33,6 +34,7 @@ files:
 ```sh
 SHELLY_IP=192.168.1.42
 SCRIPT_ID=1
+SHELLY_MIN_SCRIPT_MEM_FREE=8192
 ```
 
 The IP address is consumed by the deployment computer. It is not an input to
@@ -66,6 +68,25 @@ Verify all of the following:
 - `enable` is `true`, so it runs after a reboot;
 - it is the intended active controller, not another automation.
 
+Then run the read-only deployment guard:
+
+```sh
+node scripts/check-shelly.js preflight
+```
+
+This records current script memory and inventories every dynamic component
+whose name starts with `Atlas`. It fails when the script is stopped, reports an
+error, has less free script memory than `SHELLY_MIN_SCRIPT_MEM_FREE`, or has an
+unexpected Atlas component. The default 8192-byte floor is a local operational
+guard based on this controller's deployment history, not a vendor-published
+per-script allowance.
+
+Do not continue when old select, confirm, status, or group components remain.
+Managed components can survive script replacement or deletion, and direct
+`Virtual.Delete` may be denied. Resolve them through a supported Shelly UI or
+firmware procedure, or escalate to Shelly support. Do not factory-reset the
+device without a separate configuration backup and explicit approval.
+
 ## 2. Validate the source
 
 Run these checks before touching the device:
@@ -73,9 +94,20 @@ Run these checks before touching the device:
 ```sh
 node --check atlas-controller.js
 node --check tests/controller.test.js
+node --check scripts/build-shelly.js
+node --check scripts/check-shelly.js
 node tests/controller.test.js
+node scripts/build-shelly.js
+node --check dist/atlas-controller.js
+ATLAS_SCRIPT=dist/atlas-controller.js node tests/controller.test.js
 git diff --check
 ```
+
+Deploy `dist/atlas-controller.js`, not the readable source file. The build
+removes comments and indentation without changing the `@meta` header, enforces
+a 56,000-byte artifact ceiling, and the second simulator run verifies the exact
+artifact that will be uploaded. `dist/` is ignored and must be rebuilt for each
+deployment.
 
 ## 3. Back up the current script in chunks
 
@@ -101,7 +133,7 @@ until post-deployment verification succeeds.
 Only after the backup completes:
 
 1. Call `Script.Stop` for `SCRIPT_ID` and record whether it was running.
-2. Split `atlas-controller.js` into chunks no larger than 1024 bytes.
+2. Split `dist/atlas-controller.js` into chunks no larger than 1024 bytes.
 3. Send the first chunk with `Script.PutCode` and `append: false`.
 4. Send each remaining chunk with `append: true`.
 5. Read the new code back using the same chunked `Script.GetCode` procedure.
@@ -125,41 +157,58 @@ After startup, verify the script and its public status API:
 curl -fsS "http://${SHELLY_IP}/rpc/Script.GetStatus?id=${SCRIPT_ID}"
 curl -fsS -X POST "http://${SHELLY_IP}/rpc/Script.AtlasStatus" \
   -d "{\"id\":${SCRIPT_ID}}"
+node scripts/check-shelly.js verify
 ```
 
-The first response must report `running: true`. The Atlas status response must
-be valid and identify its initialization and scene-state fields. With the
-current controller, a restart may return `mode_known: false` and
-`durable_mode_known: false`; this is intentional uncertainty protection, not a
-deployment failure.
+The first response must report `running: true`, no `errors`, and usable
+`mem_used`, `mem_peak`, and `mem_free` values. The automated verification also
+requires the configured free-memory floor and the exact five expected virtual
+components. The Atlas status response must be valid and identify its
+initialization and scene-state fields. With the current controller, a restart
+may return `mode_known: false` and `durable_mode_known: false`; this is
+intentional uncertainty protection, not a deployment failure.
+
+Keep the backup until verification has passed after startup and again after a
+supervised exercise of Apply, Confirm, On, and Off. If the script stops, reports
+`out_of_memory`, falls below the configured memory floor, or exposes additional
+Atlas components, restore the backup immediately.
 
 On firmware that supports managed virtual components, verify these controls in
 the Shelly web interface or Shelly Smart Control:
 
-- `Atlas select Bright`
-- `Atlas select Cool`
-- `Atlas select Warm`
-- `Atlas confirm observed Bright`
-- `Atlas confirm observed Cool`
-- `Atlas confirm observed Warm`
-- `Atlas scene status`
+- `Atlas scene`
+- `Atlas Apply scene`
+- `Atlas Confirm observed`
+- `Atlas On`
+- `Atlas Off`
 
 ## 6. Restore the scene safely
 
 When the status says the mode is unknown, physically inspect the light and call
-the local `sync` command with the observed scene, or use the matching Cloud
-confirmation button. For example, after confirming the warm 2700 K / 50% scene:
+the local `sync` command with the observed scene, or choose the matching value
+in `Atlas scene` and press `Atlas Confirm observed`. Confirmation persists the
+selection without operating O1. For example, after confirming the warm
+2700 K / 50% scene:
 
 ```sh
 curl -fsS -X POST "http://${SHELLY_IP}/rpc/Script.AtlasCommand" \
   -d "{\"id\":${SCRIPT_ID},\"command\":\"sync\",\"mode\":2,\"request_id\":\"deployment-sync-warm\"}"
 ```
 
-Do not use a remote scene-select button as a substitute for this physical
-confirmation. The Cloud confirmation buttons only persist the label shown on
-the button; they cannot verify the visible output. Once `mode_known` and
-`durable_mode_known` are true, the virtual scene-select controls can safely
-select scenes again.
+Do not use remote confirmation as a substitute for physically observing the
+lamp. The Shelly cannot verify the visible output. `Atlas Apply scene` fails
+closed while state is unknown; once `mode_known` and `durable_mode_known` are
+true, it can safely apply the selected scene.
+
+For ordinary remote power control, use `Atlas On` and `Atlas Off` instead of the
+native `Output (0)` control. They are idempotent and operate O1 through the
+managed normal-power path; an On action waits for the safe OFF interval and
+preserves the tracked scene. A rapid native OFF/ON cycle bypasses that safeguard
+and must be treated as a possible scene change.
+
+There is deliberately no Cloud status component. The selector plus four action
+buttons use five managed components and five listeners. Use `Script.AtlasStatus`
+for diagnostics.
 
 ## Recovery checklist
 
@@ -169,8 +218,9 @@ If deployment did not finish successfully:
 2. Restore the preserved backup in 1024-byte `Script.PutCode` chunks.
 3. Enable startup if needed and start the restored slot.
 4. Confirm `Script.GetStatus` reports `running: true`.
-5. Check `Script.AtlasStatus`; visually synchronize if the scene is unknown.
-6. If the slot cannot start, use the Shelly web interface to paste the backup,
+5. Run `node scripts/check-shelly.js verify`.
+6. Check `Script.AtlasStatus`; visually synchronize if the scene is unknown.
+7. If the slot cannot start, use the Shelly web interface to paste the backup,
    then inspect its script log and device firmware before retrying.
 
 ## Reference

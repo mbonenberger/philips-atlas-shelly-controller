@@ -209,28 +209,45 @@ controls instead of requiring callers to invoke the script's custom RPC methods.
 
 | Virtual control | Effect |
 |---|---|
-| `Atlas select Bright` | Selects scene 0: 4000 K / 100%. |
-| `Atlas select Cool` | Selects scene 1: 6500 K / 50%. |
-| `Atlas select Warm` | Selects scene 2: 2700 K / 50%. |
-| `Atlas confirm observed Bright` | Marks the scene as 0 after visually confirming 4000 K / 100%. |
-| `Atlas confirm observed Cool` | Marks the scene as 1 after visually confirming 6500 K / 50%. |
-| `Atlas confirm observed Warm` | Marks the scene as 2 after visually confirming 2700 K / 50%. |
-| `Atlas scene status` | Shows loading, active-operation, known-scene, uncertainty, and the latest rejection or error. |
+| `Atlas scene` | Chooses Bright, Cool, or Warm without operating O1. |
+| `Atlas Apply scene` | Applies the selected scene only while tracked state is known. |
+| `Atlas Confirm observed` | Persists the selected scene only while tracked state is uncertain. |
+| `Atlas On` | Turns O1 on using the safe normal-power path. |
+| `Atlas Off` | Turns O1 off while preserving the tracked scene. |
 
-The select controls are available only when the tracked scene is known and
-durable. The confirmation controls are accepted only while the scene is
-unknown. They do not operate O1; they persist the scene named on the button.
-Before using one, inspect the actual light output and choose the matching
-button. The Shelly cannot verify that a remote user has made this observation,
-so do not use a confirmation button based on an assumption about the scene.
+Choosing a value in `Atlas scene` never operates O1. Use `Atlas Apply scene`
+for normal scene changes. It fails closed while tracked state is uncertain.
+After physically inspecting an uncertain lamp, choose the matching value and
+press `Atlas Confirm observed`; confirmation only persists the selected scene
+and never operates O1. It is rejected while state is already known. This keeps
+selection, actuation, and confirmation as distinct user actions.
+After a successful scene change or synchronization, the controller publishes
+the committed scene back to `Atlas scene`; it also restores that value from a
+known durable scene when the script starts.
+
+Use `Atlas On` and `Atlas Off` for ordinary remote power control. Both are
+idempotent and use the controller's normal-power path. `Atlas On` waits for the
+safe OFF interval when necessary, so a quick app interaction cannot be mistaken
+for an Atlas scene-change pulse. Avoid using the native `Output (0)` control for
+a rapid OFF/ON cycle: it bypasses the controller, and the Atlas may genuinely
+advance its scene.
+
+The Cloud surface intentionally has no live status component. One enum and four
+buttons keep the managed component count and event-listener count to five,
+leaving more of the Shelly's shared script-memory pool available to the
+controller. Use `Script.AtlasStatus` for diagnostics.
 
 To make the controls available remotely:
 
 1. Update the Shelly to firmware that supports managed virtual components.
-2. Deploy this script, enable **Run on startup**, and start it.
-3. In Shelly Smart Control, open the 2PM Gen4 device and enable **Cloud** if it
+2. Run `node scripts/check-shelly.js preflight`. Do not deploy while it reports
+   unexpected or orphaned Atlas components.
+3. Deploy this script, enable **Run on startup**, and start it.
+4. Run `node scripts/check-shelly.js verify` and retain the previous source
+   until the check succeeds.
+5. In Shelly Smart Control, open the 2PM Gen4 device and enable **Cloud** if it
    is not already enabled.
-4. When on the same LAN, open the device's local IP from the app and inspect
+6. When on the same LAN, open the device's local IP from the app and inspect
    **Virtual Components**. The script manages the controls automatically.
 
 These controls are specific to Shelly Smart Control. They do not add custom
@@ -241,14 +258,17 @@ for that integration.
 
 The simplest installation method is the Shelly web interface:
 
-1. Create or select a script slot.
-2. Stop the script if it is running.
-3. Upload the contents of `atlas-controller.js`.
-4. Enable **Run on startup**.
-5. Start the script.
-6. Call `Script.GetStatus` and confirm that it is running without errors.
-7. Call `Script.AtlasStatus` and confirm `initialized: true`.
-8. Visually inspect the current scene and run `sync` if `mode_known` is false.
+1. Run `node scripts/build-shelly.js` and use the generated
+   `dist/atlas-controller.js` artifact.
+2. Create or select a script slot.
+3. Stop the script if it is running.
+4. Upload the generated artifact.
+5. Enable **Run on startup**.
+6. Start the script.
+7. Call `Script.GetStatus` and confirm that it is running without errors.
+8. Call `Script.AtlasStatus` and confirm `initialized: true`.
+9. Run `node scripts/check-shelly.js verify`.
+10. Visually inspect the current scene and run `sync` if `mode_known` is false.
 
 For RPC-based deployment, `Script.PutCode` cannot overwrite a running script.
 The source is also larger than a typical single Shelly HTTP request, so upload
@@ -280,7 +300,12 @@ Run syntax checks and all tests:
 
     node --check atlas-controller.js
     node --check tests/controller.test.js
+    node --check scripts/build-shelly.js
+    node --check scripts/check-shelly.js
     node tests/controller.test.js
+    node scripts/build-shelly.js
+    node --check dist/atlas-controller.js
+    ATLAS_SCRIPT=dist/atlas-controller.js node tests/controller.test.js
 
 ## Persistence and failure safety
 

@@ -1,12 +1,10 @@
 /* @meta {
   "vc": {
-    "select_bright": { "type": "button", "config": { "name": "Atlas select Bright" } },
-    "select_cool": { "type": "button", "config": { "name": "Atlas select Cool" } },
-    "select_warm": { "type": "button", "config": { "name": "Atlas select Warm" } },
-    "confirm_bright": { "type": "button", "config": { "name": "Atlas confirm observed Bright" } },
-    "confirm_cool": { "type": "button", "config": { "name": "Atlas confirm observed Cool" } },
-    "confirm_warm": { "type": "button", "config": { "name": "Atlas confirm observed Warm" } },
-    "status": { "type": "text", "config": { "name": "Atlas scene status", "meta": { "ui": { "view": "label" } } } }
+    "scene": { "type": "enum", "config": { "name": "Atlas scene", "options": ["Bright", "Cool", "Warm"], "default_value": "Bright", "persisted": false } },
+    "apply_scene": { "type": "button", "config": { "name": "Atlas Apply scene" } },
+    "confirm_scene": { "type": "button", "config": { "name": "Atlas Confirm observed" } },
+    "power_on": { "type": "button", "config": { "name": "Atlas On" } },
+    "power_off": { "type": "button", "config": { "name": "Atlas Off" } }
   }
 } */
 
@@ -73,16 +71,14 @@ let lastPersistenceError = null;
 let retryablePendingRequestIds = [];
 
 // Managed virtual components appear in Shelly Smart Control when the device is
-// cloud-connected. Buttons are deliberately momentary: selecting the same
-// scene twice must still execute. Confirmation buttons only repair uncertain
-// state and rely on the user having visually identified the actual scene.
-let cloudSelectBright = Script.getVcHandle("select_bright");
-let cloudSelectCool = Script.getVcHandle("select_cool");
-let cloudSelectWarm = Script.getVcHandle("select_warm");
-let cloudConfirmBright = Script.getVcHandle("confirm_bright");
-let cloudConfirmCool = Script.getVcHandle("confirm_cool");
-let cloudConfirmWarm = Script.getVcHandle("confirm_warm");
-let cloudStatus = Script.getVcHandle("status");
+// cloud-connected. Selection is deliberately separate from Apply and Confirm:
+// a remote scene choice cannot silently change meaning when state is uncertain.
+let cloudScene = Script.getVcHandle("scene");
+let cloudApplyScene = Script.getVcHandle("apply_scene");
+let cloudConfirmScene = Script.getVcHandle("confirm_scene");
+let cloudPowerOn = Script.getVcHandle("power_on");
+let cloudPowerOff = Script.getVcHandle("power_off");
+let cloudSelectedMode = 0;
 
 function log(message) { print("[atlas] " + message); }
 function uptimeMs() { return Shelly.getUptimeMs(); }
@@ -225,25 +221,9 @@ function clearProvenSafePreMutationMarker() {
     setError("could not reconcile pre-mutation dirty marker: " + error.message);
   }
 }
-function cloudStatusText() {
-  if (!initialized) return "Loading controller state";
-  let text;
-  if (activeOperation) text = "Busy: " + activeOperation.name;
-  else if (!modeKnown || !durableModeKnown || persistenceDirty || safetyDegraded) {
-    text = "Scene unknown: inspect it, then confirm observed scene";
-  } else text = "Known: " + modeLabel(currentMode) + "; O1 " + (relayState === true ? "on" : (relayState === false ? "off" : "unknown"));
-  if (lastError !== null) text += "; last error: " + lastError;
-  return text.length <= 240 ? text : text.slice(0, 237) + "...";
-}
-function updateCloudStatus() {
-  if (!cloudStatus) return;
-  try { cloudStatus.setValue(cloudStatusText()); }
-  catch (error) { log("could not update Atlas cloud status: " + error.message); }
-}
 function setError(message) {
   lastError = message;
   log("ERROR: " + message);
-  updateCloudStatus();
 }
 function setHistoryError(message) {
   lastHistoryError = message;
@@ -311,7 +291,6 @@ function beginOperation(name, command, targetMode, requestId) {
   activeOperation = op;
   lastError = null;
   op.watchdog = Timer.set(OPERATION_TIMEOUT_MS, false, function () { timeoutOperation(op); });
-  updateCloudStatus();
   log("starting " + name + " as " + op.id);
   return { operation: op };
 }
@@ -349,7 +328,6 @@ function finishOperation(op, ok, message) {
   lastOperation = operationSnapshot(op);
   if (ok) log("completed " + op.name + ": " + message);
   else setError(op.name + " failed: " + message);
-  updateCloudStatus();
 }
 function recoverTimedOutRelayOn(op, callback) {
   let done = false;
@@ -485,7 +463,6 @@ function finishKvsWrite(write, ok, error) {
   write.callback(ok, error);
   persistenceDirty = safetyDegraded || kvsWriteQueue.length > 0 || !lastKvsWriteOk;
   processKvsWriteQueue();
-  updateCloudStatus();
 }
 function finishSuccessfulKvsWrite(write, result) {
   if (result && typeof result.etag === "string") {
@@ -704,7 +681,6 @@ function recordRelayTransition(isOn, internal) {
   relayState = isOn;
   if (isOn) knownOffSinceMs = null;
   else knownOffSinceMs = uptimeMs();
-  updateCloudStatus();
   if (internal) return;
 
   relayGeneration += 1;
@@ -935,6 +911,7 @@ function commitSceneOperation(op) {
     }
     currentMode = op.targetMode;
     modeKnown = true;
+    publishCloudMode(currentMode);
     finishOperation(op, true, "target scene " + currentMode + " (" + modeLabel(currentMode) + ") reached, settled, and persisted");
   });
 }
@@ -1090,25 +1067,59 @@ function startSync(mode, requestId) {
     }
     currentMode = mode;
     modeKnown = true;
+    publishCloudMode(currentMode);
     finishOperation(op, true, "scene synchronized to " + mode + " (" + modeLabel(mode) + ")");
   });
   return started;
 }
 
-function startCloudScene(mode) {
-  let started = startSetMode(mode, "cloud_select_" + mode, "set:" + mode, null);
-  if (started.error) setError("cloud scene selection was rejected: " + started.error);
-  updateCloudStatus();
+function cloudMode(value) {
+  if (value === "Bright") return 0;
+  if (value === "Cool") return 1;
+  if (value === "Warm") return 2;
+  return null;
 }
-function startCloudConfirmation(mode) {
-  if (modeKnown && durableModeKnown) {
-    setError("cloud scene confirmation is only available while the scene is unknown");
-    updateCloudStatus();
+function publishCloudMode(mode) {
+  let value = mode === 0 ? "Bright" : (mode === 1 ? "Cool" : "Warm");
+  if (!cloudScene) return;
+  try {
+    if (cloudScene.getValue() !== value) cloudScene.setValue(value);
+    cloudSelectedMode = mode;
+  } catch (error) {
+    log("could not publish Atlas scene: " + error.message);
+  }
+}
+function startCloudApply() {
+  if (activeOperation) {
+    setError("cloud scene apply was rejected: controller is busy with " + activeOperation.name);
     return;
   }
-  let started = startSync(mode, null);
+  if (!modeKnown || !durableModeKnown || persistenceDirty || safetyDegraded) {
+    setError("cloud scene apply was rejected: scene is uncertain; inspect it and use Confirm observed");
+    return;
+  }
+  let started = startSetMode(cloudSelectedMode, "cloud_apply_" + cloudSelectedMode, "set:" + cloudSelectedMode, null);
+  if (started.error) setError("cloud scene apply was rejected: " + started.error);
+}
+function startCloudConfirm() {
+  if (activeOperation) {
+    setError("cloud scene confirmation was rejected: controller is busy with " + activeOperation.name);
+    return;
+  }
+  if (modeKnown && durableModeKnown && !persistenceDirty && !safetyDegraded) {
+    setError("cloud scene confirmation was rejected: scene is already known");
+    return;
+  }
+  let started = startSync(cloudSelectedMode, null);
   if (started.error) setError("cloud scene confirmation was rejected: " + started.error);
-  updateCloudStatus();
+}
+function startCloudOn() {
+  let started = startNormalOn(null);
+  if (started.error) setError("cloud power-on was rejected: " + started.error);
+}
+function startCloudOff() {
+  let started = startNormalOff(null);
+  if (started.error) setError("cloud power-off was rejected: " + started.error);
 }
 function bindCloudButton(button, mode, handler) {
   if (!button) {
@@ -1120,13 +1131,19 @@ function bindCloudButton(button, mode, handler) {
   });
 }
 function bindCloudControls() {
-  bindCloudButton(cloudSelectBright, 0, startCloudScene);
-  bindCloudButton(cloudSelectCool, 1, startCloudScene);
-  bindCloudButton(cloudSelectWarm, 2, startCloudScene);
-  bindCloudButton(cloudConfirmBright, 0, startCloudConfirmation);
-  bindCloudButton(cloudConfirmCool, 1, startCloudConfirmation);
-  bindCloudButton(cloudConfirmWarm, 2, startCloudConfirmation);
-  updateCloudStatus();
+  if (cloudScene) {
+    let initialMode = cloudMode(cloudScene.getValue());
+    if (initialMode !== null) cloudSelectedMode = initialMode;
+    cloudScene.on("change", function (event) {
+      let selected = cloudMode(event.value);
+      if (selected === null) return setError("cloud scene selection has an unsupported value");
+      cloudSelectedMode = selected;
+    });
+  } else log("Atlas cloud scene selector is unavailable; update the Shelly firmware and restart the script");
+  bindCloudButton(cloudApplyScene, null, startCloudApply);
+  bindCloudButton(cloudConfirmScene, null, startCloudConfirm);
+  bindCloudButton(cloudPowerOn, null, startCloudOn);
+  bindCloudButton(cloudPowerOff, null, startCloudOff);
 }
 
 function statusObject(relayOn, relayError) {
@@ -1512,13 +1529,11 @@ function loadMode() {
         log("durable dirty marker found; forcing uncertain scene state");
         persistState(false, currentMode, null, function (saved, error) {
           if (!saved) setError("startup uncertainty repair failed: " + error);
-          updateCloudStatus();
         });
-        updateCloudStatus();
         return;
       }
+      if (modeKnown) publishCloudMode(currentMode);
       log(modeKnown ? "restored persistent known scene " + currentMode : "restored durable uncertain scene state; sync required");
-      updateCloudStatus();
       return;
     }
     currentMode = 0;
@@ -1530,7 +1545,6 @@ function loadMode() {
     clearProvenSafePreMutationMarker();
     persistenceDirty = hasDirtyMarker();
     log("no valid schema-5 state; visually identify the scene, then call sync");
-    updateCloudStatus();
   });
 }
 
