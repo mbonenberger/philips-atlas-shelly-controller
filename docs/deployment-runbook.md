@@ -182,6 +182,14 @@ supervised exercise of Apply, Confirm, On, and Off. If the script stops, reports
 `out_of_memory`, falls below the configured memory floor, or exposes additional
 Atlas components, restore the backup immediately.
 
+The controller has one 120-second overall operation watchdog in addition to
+the five-second KVS and relay callback timeouts. A lost relay callback is
+recoverable only when the device's synchronous output status exactly matches
+the requested relay state. A mismatch remains a failure and makes an active
+scene operation uncertain. Persistent request-ID deduplication is deliberately
+not included; never retry the relative `next` command without first inspecting
+`AtlasStatus`.
+
 Verify these provisioned controls in the Shelly web interface or Shelly Smart
 Control:
 

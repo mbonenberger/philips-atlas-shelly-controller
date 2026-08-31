@@ -334,11 +334,16 @@ A restart therefore cannot interpret a partially completed scene operation as
 successful. If completion cannot be proven, `mode_known` remains false.
 
 Normal `on`, `off`, and already-selected `set` operations do not modify scene
-state. KVS and relay calls have five-second callback timeouts. To stay within
-the device memory budget, the controller does not provide persistent request
-deduplication, etag reconciliation, automatic KVS retries, diagnostic pulses,
-or multi-stage watchdog recovery. A failed or ambiguous scene operation remains
-unknown and requires visual synchronization.
+state. KVS and relay calls have five-second callback timeouts, and every
+operation has a single 120-second watchdog. After a lost relay callback, the
+controller continues only when the synchronous output status exactly matches
+the requested state; a per-call token ignores late callbacks. A mismatch or
+unavailable status still fails closed and makes an active scene change unknown.
+
+To stay within the device memory budget, the controller does not provide
+persistent request deduplication, etag reconciliation, automatic KVS retries,
+diagnostic pulses, or multi-stage recovery. A failed or ambiguous scene
+operation remains unknown and requires visual synchronization.
 
 ## Production verification checklist
 

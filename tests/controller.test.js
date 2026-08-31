@@ -83,6 +83,8 @@ class Device {
     this.failNextKvsSet = false;
     this.dropNextKvsSet = false;
     this.dropNextSwitchSet = false;
+    this.ignoreNextSwitchSet = false;
+    this.dropNextOperationTimer = false;
     this.failNextStatusRead = false;
     this.failDirtyWrite = false;
     this.logs = [];
@@ -160,7 +162,10 @@ class Device {
         set(delay, repeat, callback) {
           if (device.timers.size >= 5) throw new Error("timer limit exceeded");
           let handle = null;
-          handle = device.schedule(delay, () => { device.timers.delete(handle); callback(); });
+          if (device.dropNextOperationTimer && callback.name === "operationTimerDone") {
+            device.dropNextOperationTimer = false;
+            handle = device.schedule(1000000000, () => { device.timers.delete(handle); callback(); });
+          } else handle = device.schedule(delay, () => { device.timers.delete(handle); callback(); });
           device.timers.add(handle);
           return handle;
         },
@@ -201,6 +206,7 @@ class Device {
             }
             if (method === "Switch.Set") {
               device.switchSets += 1;
+              if (device.ignoreNextSwitchSet) { device.ignoreNextSwitchSet = false; return; }
               if (device.relay !== params.on) {
                 device.relay = params.on;
                 device.switchTransitions.push({ at: device.now, on: params.on, known: device.kvs.get("atlas_mode").k });
@@ -399,14 +405,36 @@ test("KVS invalidation failure blocks pulses", () => {
   assert.strictEqual(device.status().mode_known, false);
 });
 
-test("lost relay callback times out without publishing success", () => {
+test("lost relay callback recovers when observed output is unambiguous", () => {
   const device = new Device({ kvs: state(0), relay: true });
   device.dropNextSwitchSet = true;
   device.command({ command: "next" });
   device.drain();
   assert.strictEqual(device.status().busy, false);
+  assert.strictEqual(device.status().mode_known, true);
+  assert.strictEqual(device.status().mode, 1);
+  assert.strictEqual(device.status().last_operation.ok, true);
+});
+
+test("lost relay callback fails closed when observed output mismatches", () => {
+  const device = new Device({ kvs: state(0), relay: true });
+  device.ignoreNextSwitchSet = true;
+  device.command({ command: "next" });
+  device.drain();
+  assert.strictEqual(device.status().busy, false);
   assert.strictEqual(device.status().mode_known, false);
   assert.strictEqual(device.status().last_operation.ok, false);
+});
+
+test("overall watchdog fails a stalled scene operation closed", () => {
+  const device = new Device({ kvs: state(0), relay: false });
+  device.dropNextOperationTimer = true;
+  device.command({ command: "next" });
+  device.drain(130000);
+  assert.strictEqual(device.status().busy, false);
+  assert.strictEqual(device.status().mode_known, false);
+  assert.strictEqual(device.status().last_operation.ok, false);
+  assert(device.status().last_operation.message.includes("watchdog expired"));
 });
 
 test("external relay change interrupts an active scene operation", () => {

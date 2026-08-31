@@ -11,6 +11,7 @@ let FINAL_SETTLE_MS = 2500;
 let SAFE_OFF_MS = 12000;
 let SCENE_OFF_MAX_MS = 8000;
 let RPC_TIMEOUT_MS = 5000;
+let OPERATION_TIMEOUT_MS = 120000;
 
 let mode = 0;
 let known = false;
@@ -21,6 +22,7 @@ let offSince = null;
 let expectedRelay = null;
 let operation = null;
 let operationCounter = 0;
+let relayCallCounter = 0;
 let lastOperation = null;
 let lastError = null;
 let saveBusy = false;
@@ -159,11 +161,12 @@ function beginOperation(command, target, sceneMutation) {
   operation = {
     id: "op-" + now() + "-" + operationCounter,
     command: command, target: target, sceneMutation: sceneMutation,
-    phase: "starting", timer: null, desired: null,
+    phase: "starting", timer: null, watchdog: null, desired: null, relayToken: 0,
     working: mode, remaining: 0, primer: false,
     pulseOffMs: 0, pulseWaitMs: 0, pulseIndex: 0, pulseCount: 0,
     ok: null, message: null
   };
+  operation.watchdog = Timer.set(OPERATION_TIMEOUT_MS, false, operationWatchdog);
   lastError = null;
   return { operation: operation };
 }
@@ -173,9 +176,23 @@ function clearOperationTimer() {
     operation.timer = null;
   }
 }
+function clearOperationWatchdog() {
+  if (operation && operation.watchdog !== null) {
+    Timer.clear(operation.watchdog);
+    operation.watchdog = null;
+  }
+}
+function operationWatchdog() {
+  if (!operation) return;
+  operation.watchdog = null;
+  let reason = "operation watchdog expired during " + operation.phase;
+  if (operation.sceneMutation) markUnknown(reason);
+  finishOperation(false, reason);
+}
 function finishOperation(ok, message) {
   if (!operation) return;
   clearOperationTimer();
+  clearOperationWatchdog();
   expectedRelay = null;
   operation.phase = "completed";
   operation.ok = ok;
@@ -204,6 +221,13 @@ function relayTimeout() {
   operation.timer = null;
   expectedRelay = null;
   let phase = operation.phase;
+  let desired = operation.desired;
+  operation.relayToken = 0;
+  let relay = readRelay();
+  if (!relay.error && relay.on === desired) {
+    log("recovered lost Switch.Set callback during " + phase);
+    return relayPhaseSucceeded(desired, phase);
+  }
   if (operation.sceneMutation) markUnknown("relay callback timeout during " + phase);
   finishOperation(false, "relay callback timeout during " + phase);
 }
@@ -213,14 +237,25 @@ function callRelay(value, phase) {
   operation.phase = phase;
   operation.desired = value;
   expectedRelay = value;
+  relayCallCounter += 1;
+  operation.relayToken = relayCallCounter;
   operation.timer = Timer.set(RPC_TIMEOUT_MS, false, relayTimeout);
-  Shelly.call("Switch.Set", { id: SWITCH_ID, on: value }, relaySetDone, operation.id);
+  Shelly.call("Switch.Set", { id: SWITCH_ID, on: value }, relaySetDone, operation.relayToken);
 }
-function relaySetDone(result, code, message, operationId) {
-  if (!operation || operation.id !== operationId) return;
+function relayPhaseSucceeded(desired, phase) {
+  if (!operation) return;
+  recordRelay(desired);
+  if (phase === "normal_off") return finishOperation(true, "O1 is off; tracked scene is unchanged");
+  if (phase === "restore_on") return powerRestored();
+  if (phase === "pulse_off") return scheduleOperation(operation.pulseOffMs, "pulse_off_wait");
+  if (phase === "pulse_on") return pulseCompleted();
+}
+function relaySetDone(result, code, message, relayToken) {
+  if (!operation || operation.relayToken !== relayToken) return;
   clearOperationTimer();
   let desired = operation.desired;
   let phase = operation.phase;
+  operation.relayToken = 0;
   expectedRelay = null;
   if (code !== 0) {
     if (operation.sceneMutation) markUnknown("Switch.Set failed during " + phase);
@@ -231,11 +266,7 @@ function relaySetDone(result, code, message, operationId) {
     if (operation.sceneMutation) markUnknown("relay verification failed during " + phase);
     return finishOperation(false, relay.error || "relay verification failed");
   }
-  recordRelay(desired);
-  if (phase === "normal_off") return finishOperation(true, "O1 is off; tracked scene is unchanged");
-  if (phase === "restore_on") return powerRestored();
-  if (phase === "pulse_off") return scheduleOperation(operation.pulseOffMs, "pulse_off_wait");
-  if (phase === "pulse_on") return pulseCompleted();
+  relayPhaseSucceeded(desired, phase);
 }
 
 function restorePowerNow() {
