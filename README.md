@@ -79,7 +79,7 @@ The script therefore sends one primer before the required scene-advance pulses.
 
 When a command begins with O1 already on:
 
-- OFF pulse: 150 ms;
+- OFF pulse: 250 ms;
 - ON interval between pulses: 250 ms;
 - one primer pulse is included.
 
