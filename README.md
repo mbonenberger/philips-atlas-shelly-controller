@@ -32,6 +32,7 @@ only controlled output. O2 is never read or changed.
 |---|---|
 | `atlas-controller.js` | Shelly Script deployed to the device. |
 | `tests/controller.test.js` | Node.js simulator and regression tests. |
+| `docs/deployment-runbook.md` | Safe, repeatable RPC deployment and recovery procedure. |
 | `README.md` | Operating, deployment, recovery, and maintenance guide. |
 
 ## Hardware and configuration assumptions
@@ -249,6 +250,10 @@ The source is also larger than a typical single Shelly HTTP request, so upload
 it in 1024-byte chunks: the first request uses `append: false`, and every later
 request uses `append: true`. Read the code back and compare its checksum before
 starting the slot.
+
+For the complete repeatable procedure, including a chunked backup of the
+currently deployed script and rollback steps, see the
+[deployment runbook](docs/deployment-runbook.md).
 
 Stopping or starting the script does not intentionally change O1. Avoid using
 the physical wall switch while code is being replaced, because relay events
