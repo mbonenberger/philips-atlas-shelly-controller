@@ -1,0 +1,40 @@
+- resource: !secret atlas_controller_status_url
+  method: POST
+  # Change id if the Atlas Controller is not installed in Shelly script slot 1.
+  payload: '{"id": 1}'
+  headers:
+    Content-Type: application/json
+  scan_interval: 10
+  timeout: 5
+  sensor:
+    - name: Atlas Controller Status
+      unique_id: atlas_controller_status
+      value_template: >-
+        {% if value_json.mode_known %}
+          {{ value_json.scene }}
+        {% else %}
+          Unknown scene
+        {% endif %}
+      json_attributes:
+        - initialized
+        - relay_on
+        - relay_error
+        - mode
+        - scene
+        - mode_known
+        - durable_mode_known
+        - persistent
+        - busy
+        - operation
+        - last_operation
+        - last_error
+        - persistence_busy
+        - timing_ms
+
+- resource: !secret atlas_scene_status_url
+  scan_interval: 10
+  timeout: 5
+  sensor:
+    - name: Atlas Selected Scene
+      unique_id: atlas_selected_scene
+      value_template: "{{ value_json.value }}"

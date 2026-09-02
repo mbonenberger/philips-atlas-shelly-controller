@@ -1,0 +1,224 @@
+atlas_adapter_command:
+  alias: Atlas Adapter Command
+  description: Serializes Home Assistant actions and validates the exact controller operation.
+  mode: single
+  max_exceeded: error
+  fields:
+    operation:
+      required: true
+      selector:
+        select:
+          options:
+            - turn_on
+            - turn_off
+            - set_effect
+    effect:
+      selector:
+        select:
+          options:
+            - Bright
+            - Cool
+            - Warm
+  sequence:
+    - action: rest_command.atlas_controller_command
+      data:
+        command: status
+      response_variable: atlas_before
+
+    - if:
+        - condition: template
+          value_template: >-
+            {% set content = atlas_before.content | default(none) %}
+            {{ atlas_before.status | default(0) != 200
+               or content is not mapping
+               or not content.get('initialized', false)
+               or content.get('busy') != false
+               or content.get('persistence_busy') != false }}
+      then:
+        - stop: "Atlas controller status request failed, returned an invalid payload, or reported busy."
+          error: true
+
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: >-
+                {{ operation == 'set_effect'
+                   and atlas_before.content.relay_on == false }}
+          sequence:
+            - if:
+                - condition: template
+                  value_template: "{{ effect in ['Bright', 'Cool', 'Warm'] }}"
+              then:
+                - action: rest_command.atlas_controller_select_scene
+                  data:
+                    scene: "{{ effect }}"
+                - action: homeassistant.update_entity
+                  target:
+                    entity_id: sensor.atlas_selected_scene
+                - if:
+                    - condition: template
+                      value_template: "{{ states('sensor.atlas_selected_scene') == effect }}"
+                  then:
+                    - stop: "Atlas scene was preset without operating the relay."
+                  else:
+                    - stop: "Atlas scene preset could not be confirmed."
+                      error: true
+              else:
+                - stop: "Invalid Atlas scene preset."
+                  error: true
+
+    - if:
+        - condition: template
+          value_template: >-
+            {{ operation != 'turn_off'
+               and not (
+                 atlas_before.content.mode_known == true
+                 and atlas_before.content.durable_mode_known == true
+                 and atlas_before.content.persistent == true
+                 and atlas_before.content.relay_error is none
+               ) }}
+      then:
+        - stop: "Atlas scene is uncertain or not persistent. Inspect it and perform a safe sync."
+          error: true
+
+    - if:
+        - condition: template
+          value_template: "{{ operation == 'turn_on' }}"
+      then:
+        - action: homeassistant.update_entity
+          target:
+            entity_id: sensor.atlas_selected_scene
+
+    - variables:
+        atlas_target_effect: >-
+          {% if operation == 'set_effect' %}
+            {{ effect }}
+          {% elif operation == 'turn_on' %}
+            {{ states('sensor.atlas_selected_scene') }}
+          {% else %}
+            {{ none }}
+          {% endif %}
+        atlas_target_mode: >-
+          {{ {'Bright': 0, 'Cool': 1, 'Warm': 2}.get(atlas_target_effect) }}
+
+    - if:
+        - condition: template
+          value_template: >-
+            {{ operation != 'turn_off'
+               and atlas_target_effect not in ['Bright', 'Cool', 'Warm'] }}
+      then:
+        - stop: "Atlas target scene is unavailable."
+          error: true
+
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: "{{ operation == 'turn_off' }}"
+          sequence:
+            - action: rest_command.atlas_controller_command
+              data:
+                command: "off"
+              response_variable: atlas_command_response
+      default:
+        - action: rest_command.atlas_controller_command
+          data:
+            command: set
+            mode: "{{ atlas_target_mode }}"
+          response_variable: atlas_command_response
+
+    - variables:
+        atlas_operation_id: >-
+          {{ atlas_command_response.content.operation_id | default('') }}
+
+    - if:
+        - condition: template
+          value_template: "{{ atlas_operation_id | length == 0 }}"
+      then:
+        - stop: "Atlas controller returned no operation ID."
+          error: true
+
+    - wait_template: >-
+        {% set last = state_attr('sensor.atlas_controller_status', 'last_operation') %}
+        {{ state_attr('sensor.atlas_controller_status', 'busy') == false
+           and last is mapping
+           and last.get('id') == atlas_operation_id }}
+      timeout: "00:02:15"
+      continue_on_timeout: true
+
+    - action: rest_command.atlas_controller_command
+      data:
+        command: status
+      response_variable: atlas_after
+
+    - if:
+        - condition: template
+          value_template: >-
+            {% set content = atlas_after.content | default(none) %}
+            {{ atlas_after.status | default(0) != 200
+               or content is not mapping
+               or content.get('last_operation') is not mapping }}
+      then:
+        - stop: "Atlas controller final status request failed or returned an invalid payload. Do not repeat the operation; inspect status."
+          error: true
+
+    - if:
+        - condition: template
+          value_template: >-
+            {% set last = atlas_after.content.last_operation %}
+            {{ not (
+              atlas_after.content.busy == false
+              and atlas_after.content.persistence_busy == false
+              and atlas_after.content.relay_error is none
+              and last is mapping
+              and last.get('id') == atlas_operation_id
+              and last.get('ok') == true
+              and atlas_after.content.last_error is none
+              and (
+                (operation == 'turn_off' and atlas_after.content.relay_on == false)
+                or
+                (operation != 'turn_off'
+                 and atlas_after.content.relay_on == true
+                 and atlas_after.content.mode == atlas_target_mode
+                 and atlas_after.content.mode_known == true
+                 and atlas_after.content.durable_mode_known == true
+                 and atlas_after.content.persistent == true)
+              )
+            ) }}
+      then:
+        - stop: "Atlas operation did not complete safely. Do not repeat it; inspect status."
+          error: true
+
+    - if:
+        - condition: template
+          value_template: "{{ operation == 'set_effect' }}"
+      then:
+        - action: rest_command.atlas_controller_select_scene
+          data:
+            scene: "{{ atlas_target_effect }}"
+        - action: homeassistant.update_entity
+          target:
+            entity_id: sensor.atlas_selected_scene
+        - if:
+            - condition: template
+              value_template: "{{ states('sensor.atlas_selected_scene') != atlas_target_effect }}"
+          then:
+            - stop: "Atlas scene was applied but its selector could not be synchronized."
+              error: true
+
+atlas_turn_on:
+  alias: Atlas Turn On
+  description: Turns Atlas on through the serialized safe adapter.
+  mode: single
+  sequence:
+    - action: light.turn_on
+      target:
+        entity_id: light.atlas_light
+
+atlas_turn_off:
+  alias: Atlas Turn Off
+  description: Turns Atlas off through the serialized safe adapter.
+  mode: single
+  sequence:
+    - action: light.turn_off
+      target:
+        entity_id: light.atlas_light
