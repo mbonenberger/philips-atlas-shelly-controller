@@ -87,8 +87,10 @@ When a command begins with O1 off:
 
 - the script first waits for the remaining part of the 12-second safe-OFF
   interval;
+- after restoring O1, it gives the Atlas electronics 500 ms to initialize
+  before starting the first counted scene pulse;
 - OFF pulse: 500 ms;
-- ON interval between pulses: 500 ms;
+- ON interval between subsequent pulses: 500 ms;
 - no primer is needed after restoration.
 
 Every scene command waits 2500 ms after the final ON edge before committing the
