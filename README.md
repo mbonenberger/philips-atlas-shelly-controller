@@ -33,6 +33,7 @@ only controlled output. O2 is never read or changed.
 | `atlas-controller.js` | Shelly Script deployed to the device. |
 | `tests/controller.test.js` | Node.js simulator and regression tests. |
 | `docs/deployment-runbook.md` | Safe, repeatable RPC deployment and recovery procedure. |
+| `home-assistant/README.md` | Optional Home Assistant adapter and deployment guide. |
 | `README.md` | Operating, deployment, recovery, and maintenance guide. |
 
 ## Hardware and configuration assumptions
@@ -256,6 +257,15 @@ To make the controls available remotely:
 These controls are specific to Shelly Smart Control. They do not add custom
 scene controls to the existing native Apple Home switch; use a HomeKit bridge
 for that integration.
+
+## Home Assistant integration
+
+The optional [Home Assistant adapter](home-assistant/README.md) exposes the
+controller as a semantic light with Bright, Cool, and Warm effects. It also
+provides a separate scene-preset select so an automation can choose a scene
+while the lamp is off and apply it when turning the lamp on. Home Assistant
+delegates every relay transition, delay, scene calculation, and uncertainty
+decision to this controller; it never operates raw O1.
 
 ## Installation and deployment
 

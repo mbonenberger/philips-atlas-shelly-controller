@@ -1,0 +1,16 @@
+atlas_controller_command:
+  url: !secret atlas_controller_command_url
+  method: post
+  content_type: application/json
+  timeout: 10
+  # Change id if the Atlas Controller is not installed in Shelly script slot 1.
+  payload: >-
+    {"id": 1, "command": "{{ command }}"{% if mode is defined %}, "mode": {{ mode | int }}{% endif %}}
+
+atlas_controller_select_scene:
+  url: !secret atlas_scene_select_url
+  method: post
+  content_type: application/json
+  timeout: 5
+  payload: >-
+    {"id": 200, "value": "{{ scene }}"}

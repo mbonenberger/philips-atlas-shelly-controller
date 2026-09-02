@@ -1,0 +1,63 @@
+- light:
+    - name: Atlas Light
+      unique_id: atlas_light
+      state: "{{ state_attr('sensor.atlas_controller_status', 'relay_on') | default(false, true) }}"
+      availability: >-
+        {{ states('sensor.atlas_controller_status') not in ['unknown', 'unavailable']
+           and state_attr('sensor.atlas_controller_status', 'initialized') | default(false, true) }}
+      effect_list: "{{ ['Bright', 'Cool', 'Warm'] }}"
+      effect: >-
+        {% if not (state_attr('sensor.atlas_controller_status', 'relay_on') | default(false, true))
+              and states('sensor.atlas_selected_scene') in ['Bright', 'Cool', 'Warm'] %}
+          {{ states('sensor.atlas_selected_scene') }}
+        {% elif state_attr('sensor.atlas_controller_status', 'mode_known') | default(false) %}
+          {% set scene = state_attr('sensor.atlas_controller_status', 'scene') %}
+          {{ {'4000K / 100%': 'Bright', '6500K / 50%': 'Cool', '2700K / 50%': 'Warm'}.get(scene, none) }}
+        {% else %}
+          {{ none }}
+        {% endif %}
+      turn_on:
+        - action: script.atlas_adapter_command
+          data:
+            operation: turn_on
+      turn_off:
+        - action: script.atlas_adapter_command
+          data:
+            operation: turn_off
+      set_effect:
+        - action: script.atlas_adapter_command
+          data:
+            operation: set_effect
+            effect: "{{ effect }}"
+
+- select:
+    - name: Atlas Scene Preset
+      unique_id: atlas_scene_preset
+      state: >-
+        {% set selected = states('sensor.atlas_selected_scene') %}
+        {{ selected if selected in ['Bright', 'Cool', 'Warm'] else none }}
+      options: "{{ ['Bright', 'Cool', 'Warm'] }}"
+      availability: >-
+        {{ states('sensor.atlas_selected_scene') not in ['unknown', 'unavailable']
+           and states('sensor.atlas_controller_status') not in ['unknown', 'unavailable']
+           and state_attr('sensor.atlas_controller_status', 'initialized') | default(false, true) }}
+      select_option:
+        - action: script.atlas_adapter_command
+          data:
+            operation: set_effect
+            effect: "{{ option }}"
+
+- binary_sensor:
+    - name: Atlas Scene Uncertain
+      unique_id: atlas_scene_uncertain
+      device_class: problem
+      state: >-
+        {{ not (
+          state_attr('sensor.atlas_controller_status', 'mode_known') == true
+          and state_attr('sensor.atlas_controller_status', 'durable_mode_known') == true
+          and state_attr('sensor.atlas_controller_status', 'persistent') == true
+          and state_attr('sensor.atlas_controller_status', 'relay_error') is none
+        ) }}
+      availability: >-
+        {{ states('sensor.atlas_controller_status') not in ['unknown', 'unavailable']
+           and state_attr('sensor.atlas_controller_status', 'initialized') | default(false, true) }}
