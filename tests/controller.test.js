@@ -70,6 +70,12 @@ class Device {
     this.relay = options.relay === undefined ? true : options.relay;
     this.kvs = options.kvs || new Map();
     this.storage = options.storage || new Map();
+    const storedState = this.kvs.get("atlas_mode");
+    this.lampMode = options.lampMode === undefined ? (storedState ? storedState.m : 0) : options.lampMode;
+    this.lampPrimerRequired = this.relay;
+    this.lampColdRestoreAt = null;
+    this.lampOffAt = this.relay ? null : this.now - 12000;
+    this.lampPulseFromColdRestore = null;
     this.virtual = new Map();
     this.handlers = {};
     this.statusHandlers = [];
@@ -123,8 +129,33 @@ class Device {
     for (const handler of this.statusHandlers) handler({ component: "switch:0", delta: { output: value } });
   }
 
+  recordLampRelay(value) {
+    if (this.relay === value) return;
+    if (!value) {
+      this.lampPulseFromColdRestore = this.lampColdRestoreAt === null ? null : this.now - this.lampColdRestoreAt;
+      this.lampOffAt = this.now;
+      return;
+    }
+    const offDuration = this.lampOffAt === null ? null : this.now - this.lampOffAt;
+    if (offDuration !== null && offDuration >= 8000) {
+      this.lampPrimerRequired = false;
+      this.lampColdRestoreAt = this.now;
+    } else if (this.lampPrimerRequired) {
+      this.lampPrimerRequired = false;
+      this.lampColdRestoreAt = null;
+    } else if (this.lampPulseFromColdRestore === null || this.lampPulseFromColdRestore >= 500) {
+      this.lampMode = (this.lampMode + 1) % 3;
+      this.lampColdRestoreAt = null;
+    } else {
+      this.lampColdRestoreAt = this.now;
+    }
+    this.lampOffAt = null;
+    this.lampPulseFromColdRestore = null;
+  }
+
   physicalSet(value) {
     if (this.relay === value) return;
+    this.recordLampRelay(value);
     this.relay = value;
     this.emitRelay(value);
   }
@@ -208,6 +239,7 @@ class Device {
               device.switchSets += 1;
               if (device.ignoreNextSwitchSet) { device.ignoreNextSwitchSet = false; return; }
               if (device.relay !== params.on) {
+                device.recordLampRelay(params.on);
                 device.relay = params.on;
                 device.switchTransitions.push({ at: device.now, on: params.on, known: device.kvs.get("atlas_mode").k });
                 device.emitRelay(params.on);
@@ -306,17 +338,53 @@ test("an already-on scene change includes one primer pulse", () => {
   device.drain();
   assert.strictEqual(device.switchSets, 4);
   assert.strictEqual(device.status().last_operation.pulse_count, 2);
+  assert.strictEqual(device.lampMode, 1);
 });
 
-test("an off-state scene change waits safely and uses no primer", () => {
+test("an off-state scene change lets the lamp initialize before its first counted pulse", () => {
   const device = new Device({ kvs: state(0), relay: false });
   device.command({ command: "set", mode: 1 });
   device.runUntil(12999);
   assert.strictEqual(device.switchSets, 0);
+  device.runUntil(13000);
+  assert.deepStrictEqual(device.switchTransitions.map((transition) => [transition.at, transition.on]), [[13000, true]]);
+  assert.strictEqual(device.status().operation.phase, "restore_settle");
+  assert.strictEqual(device.status().timing_ms.restored_from_off_on_settle, 500);
+  device.runUntil(13499);
+  assert.strictEqual(device.switchSets, 1);
+  assert.strictEqual(device.lampMode, 0);
   device.drain();
   assert.strictEqual(device.switchSets, 3);
+  assert.deepStrictEqual(device.switchTransitions.map((transition) => [transition.at, transition.on]), [
+    [13000, true], [13500, false], [14000, true]
+  ]);
   assert.strictEqual(device.status().last_operation.pulse_count, 1);
   assert.strictEqual(device.status().mode, 1);
+  assert.strictEqual(device.lampMode, 1);
+});
+
+test("an off-state two-step scene change preserves 500 ms ON intervals", () => {
+  const device = new Device({ kvs: state(0), relay: false });
+  device.command({ command: "set", mode: 2 });
+  device.drain();
+  assert.deepStrictEqual(device.switchTransitions.map((transition) => [transition.at, transition.on]), [
+    [13000, true], [13500, false], [14000, true], [14500, false], [15000, true]
+  ]);
+  assert.strictEqual(device.status().last_operation.pulse_count, 2);
+  assert.strictEqual(device.status().mode, 2);
+  assert.strictEqual(device.lampMode, 2);
+});
+
+test("an external O1 change during restore settling fails closed", () => {
+  const device = new Device({ kvs: state(0), relay: false });
+  device.command({ command: "set", mode: 1 });
+  device.runUntil(13000);
+  assert.strictEqual(device.status().operation.phase, "restore_settle");
+  device.physicalSet(false);
+  device.drain();
+  assert.strictEqual(device.status().busy, false);
+  assert.strictEqual(device.status().mode_known, false);
+  assert.strictEqual(device.status().last_operation.ok, false);
 });
 
 test("normal Off and On preserve the tracked scene", () => {

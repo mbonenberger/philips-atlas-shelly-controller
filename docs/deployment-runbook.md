@@ -190,6 +190,13 @@ scene operation uncertain. Persistent request-ID deduplication is deliberately
 not included; never retry the relative `next` command without first inspecting
 `AtlasStatus`.
 
+For a scene change that starts with O1 safely off, the expected relay sequence
+is: restore O1, hold it on for 500 ms so the Atlas electronics can initialize,
+then begin the 500 ms OFF/500 ms ON scene pulses. The active operation reports
+`restore_settle` during that initial ON interval, and `AtlasStatus.timing_ms`
+reports it as `restored_from_off_on_settle`. A successful `Switch.Set` response
+proves only the relay state; it does not by itself prove the visible scene.
+
 Verify these provisioned controls in the Shelly web interface or Shelly Smart
 Control:
 
@@ -226,6 +233,22 @@ and must be treated as a possible scene change.
 There is deliberately no Cloud status component. The selector plus four action
 buttons use five provisioned components and five listeners. Use
 `Script.AtlasStatus` for diagnostics.
+
+### Supervised OFF-state scene acceptance
+
+Run this check after changing relay timing or the OFF-state scene path, with a
+person present to observe the lamp:
+
+1. Visually identify the current scene and synchronize it exactly once.
+2. Turn the light off through `Atlas Off` and wait for the complete safe-OFF
+   interval.
+3. Select a different absolute scene and apply it once; do not use `next`.
+4. Confirm the visible scene before accepting `mode_known`,
+   `durable_mode_known`, and `persistent` as operationally valid.
+5. Repeat separately for a two-step absolute change and for an already-on
+   scene change.
+6. At the first visual mismatch, stop. Do not repeat the command; inspect the
+   lamp and perform one safe synchronization to the observed scene.
 
 ## Recovery checklist
 

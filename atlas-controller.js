@@ -7,6 +7,7 @@ let ON_PULSE_OFF_MS = 250;
 let ON_PULSE_WAIT_MS = 250;
 let OFF_PULSE_OFF_MS = 500;
 let OFF_PULSE_WAIT_MS = 500;
+let OFF_RESTORE_SETTLE_MS = 500;
 let FINAL_SETTLE_MS = 2500;
 let SAFE_OFF_MS = 12000;
 let SCENE_OFF_MAX_MS = 8000;
@@ -162,7 +163,7 @@ function beginOperation(command, target, sceneMutation) {
     id: "op-" + now() + "-" + operationCounter,
     command: command, target: target, sceneMutation: sceneMutation,
     phase: "starting", timer: null, watchdog: null, desired: null, relayToken: 0,
-    working: mode, remaining: 0, primer: false,
+    working: mode, remaining: 0, primer: false, restoredFromOff: false,
     pulseOffMs: 0, pulseWaitMs: 0, pulseIndex: 0, pulseCount: 0,
     ok: null, message: null
   };
@@ -212,6 +213,7 @@ function operationTimerDone() {
   if (!operation) return;
   operation.timer = null;
   if (operation.phase === "safe_on_wait") return restorePowerNow();
+  if (operation.phase === "restore_settle") return startPulse();
   if (operation.phase === "pulse_off_wait") return callRelay(true, "pulse_on");
   if (operation.phase === "between_pulses") return startPulse();
   if (operation.phase === "final_settle") return persistFinalScene();
@@ -279,6 +281,7 @@ function restorePowerNow() {
 function powerRestored() {
   if (!operation) return;
   if (operation.command === "on" || operation.command === "set_same") return finishOperation(true, "O1 is on; tracked scene is unchanged");
+  if (operation.restoredFromOff) return scheduleOperation(OFF_RESTORE_SETTLE_MS, "restore_settle");
   startPulse();
 }
 function startPulse() {
@@ -325,6 +328,7 @@ function prepareSceneChange() {
   recordRelay(relay.on);
   let steps = (operation.target - operation.working + 3) % 3;
   if (relay.on) {
+    operation.restoredFromOff = false;
     operation.pulseOffMs = ON_PULSE_OFF_MS;
     operation.pulseWaitMs = ON_PULSE_WAIT_MS;
     operation.primer = true;
@@ -332,6 +336,7 @@ function prepareSceneChange() {
     operation.pulseCount = operation.remaining;
     return startPulse();
   }
+  operation.restoredFromOff = true;
   operation.pulseOffMs = OFF_PULSE_OFF_MS;
   operation.pulseWaitMs = OFF_PULSE_WAIT_MS;
   operation.primer = false;
@@ -470,6 +475,7 @@ function statusValue() {
     timing_ms: {
       safe_normal_off: SAFE_OFF_MS,
       scene_switch_max_off: SCENE_OFF_MAX_MS,
+      restored_from_off_on_settle: OFF_RESTORE_SETTLE_MS,
       restore_wait_remaining: relay.on === false ? remainingSafeOff() : 0
     }
   };
